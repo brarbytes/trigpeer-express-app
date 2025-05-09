@@ -37,42 +37,66 @@ function getKey(header, callback) {
 }
 
 // === WebSocket Setup ===
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ 
+  noServer: true // Important: Let Express handle the upgrade
+});
+
 const connections = new Map(); // Map of sub -> ws
+
+// Handle WebSocket upgrade
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url, 'ws://localhost').pathname;
+
+  if (pathname === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 // === On WebSocket Connect ===
 wss.on('connection', async function connection(ws, req) {
-  const token = req.url.split('token=')[1];
-  if (!token) {
-    ws.close();
-    return;
-  }
+  try {
+    const url = new URL(req.url, 'ws://localhost');
+    const token = url.searchParams.get('token');
 
-  jwt.verify(token, getKey, {}, async (err, decoded) => {
-    if (err) {
-      ws.close();
+    if (!token) {
+      ws.close(1008, 'Token required');
       return;
     }
 
-    const { sub, email, name } = decoded;
-    connections.set(sub, ws);
+    jwt.verify(token, getKey, {}, async (err, decoded) => {
+      if (err) {
+        console.error('Token verification failed:', err);
+        ws.close(1008, 'Invalid token');
+        return;
+      }
 
-    // Mark user online in DB
-    await db.query(`
-      INSERT INTO users (cognito_sub, email, name, is_online, last_active)
-      VALUES ($1, $2, $3, true, NOW())
-      ON CONFLICT (cognito_sub)
-      DO UPDATE SET is_online = true, last_active = NOW()
-    `, [sub, email, name]);
+      const { sub, email, name } = decoded;
+      connections.set(sub, ws);
 
-    console.log(`${sub} connected`);
+      // Mark user online in DB
+      await db.query(`
+        INSERT INTO users (cognito_sub, email, name, is_online, last_active)
+        VALUES ($1, $2, $3, true, NOW())
+        ON CONFLICT (cognito_sub)
+        DO UPDATE SET is_online = true, last_active = NOW()
+      `, [sub, email, name]);
 
-    ws.on('close', async () => {
-      connections.delete(sub);
-      await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
-      console.log(`${sub} disconnected`);
+      console.log(`${sub} connected`);
+
+      ws.on('close', async () => {
+        connections.delete(sub);
+        await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
+        console.log(`${sub} disconnected`);
+      });
     });
-  });
+  } catch (error) {
+    console.error('Connection error:', error);
+    ws.close(1011, 'Internal server error');
+  }
 });
 
 // === REST ROUTE to get online count ===
