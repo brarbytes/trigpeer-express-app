@@ -38,35 +38,30 @@ function getKey(header, callback) {
 
 // === WebSocket Setup ===
 const wss = new WebSocketServer({ 
-  noServer: true // Important: Let Express handle the upgrade
+  server,
+  path: '/ws'
 });
 
 const connections = new Map(); // Map of sub -> ws
 
-// Handle WebSocket upgrade
-server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url, 'ws://localhost').pathname;
-
-  if (pathname === '/ws') {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  } else {
-    socket.destroy();
-  }
-});
-
 // === On WebSocket Connect ===
 wss.on('connection', async function connection(ws, req) {
+  console.log('New WebSocket connection attempt');
+  
   try {
+    // Parse URL to get token
     const url = new URL(req.url, 'ws://localhost');
     const token = url.searchParams.get('token');
+    
+    console.log('Token received:', token ? 'Yes' : 'No');
 
     if (!token) {
+      console.log('No token provided');
       ws.close(1008, 'Token required');
       return;
     }
 
+    // Verify token
     jwt.verify(token, getKey, {}, async (err, decoded) => {
       if (err) {
         console.error('Token verification failed:', err);
@@ -74,29 +69,43 @@ wss.on('connection', async function connection(ws, req) {
         return;
       }
 
+      console.log('Token verified successfully');
       const { sub, email, name } = decoded;
       connections.set(sub, ws);
 
       // Mark user online in DB
-      await db.query(`
-        INSERT INTO users (cognito_sub, email, name, is_online, last_active)
-        VALUES ($1, $2, $3, true, NOW())
-        ON CONFLICT (cognito_sub)
-        DO UPDATE SET is_online = true, last_active = NOW()
-      `, [sub, email, name]);
+      try {
+        await db.query(`
+          INSERT INTO users (cognito_sub, email, name, is_online, last_active)
+          VALUES ($1, $2, $3, true, NOW())
+          ON CONFLICT (cognito_sub)
+          DO UPDATE SET is_online = true, last_active = NOW()
+        `, [sub, email, name]);
 
-      console.log(`${sub} connected`);
+        console.log(`${sub} connected and marked online`);
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+      }
 
       ws.on('close', async () => {
         connections.delete(sub);
-        await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
-        console.log(`${sub} disconnected`);
+        try {
+          await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
+          console.log(`${sub} disconnected and marked offline`);
+        } catch (dbError) {
+          console.error('Database error on disconnect:', dbError);
+        }
       });
     });
   } catch (error) {
     console.error('Connection error:', error);
     ws.close(1011, 'Internal server error');
   }
+});
+
+// Add a test endpoint to verify server is running
+app.get('/', (req, res) => {
+  res.send('WebSocket server is running');
 });
 
 // === REST ROUTE to get online count ===
@@ -107,4 +116,5 @@ app.get('/online-count', async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`WebSocket server running on ws://localhost:${PORT}/ws`);
 });
