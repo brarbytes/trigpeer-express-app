@@ -91,11 +91,17 @@ wss.on('connection', async function connection(ws, req) {
     jwt.verify(token, getKey, {}, async (err, decoded) => {
       if (err) {
         console.error('Token verification failed:', err);
+        console.error('Token verification error details:', {
+          name: err.name,
+          message: err.message,
+          stack: err.stack
+        });
         ws.close(1008, 'Invalid token');
         return;
       }
 
       console.log('Token verified successfully');
+      console.log('Decoded token:', decoded);
       const { sub, email, name } = decoded;
       connections.set(sub, ws);
 
