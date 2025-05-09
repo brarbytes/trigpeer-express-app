@@ -22,6 +22,15 @@ const db = new Pool({
   port: 5432,
 });
 
+// Test database connection
+db.query('SELECT NOW()', (err, res) => {
+  if (err) {
+    console.error('Database connection error:', err);
+  } else {
+    console.log('Database connected successfully');
+  }
+});
+
 // === EXPRESS SERVER ===
 const app = express();
 const server = http.createServer(app);
@@ -56,6 +65,7 @@ async function broadcastOnlineCount() {
   try {
     const result = await db.query(`SELECT COUNT(*) FROM users WHERE is_online = true`);
     const count = parseInt(result.rows[0].count);
+    console.log('Broadcasting online count:', count);
     
     const message = JSON.stringify({
       type: 'onlineCount',
@@ -95,37 +105,58 @@ wss.on('connection', async function connection(ws, req) {
         return;
       }
 
-      console.log('Token verified successfully');
+      console.log('Token verified successfully. User data:', decoded);
       const { sub, email, name } = decoded;
       connections.set(sub, ws);
 
       // Mark user online in DB
       try {
-        await db.query(`
+        console.log('Attempting to update user status in database:', { sub, email, name });
+        
+        const query = `
           INSERT INTO users (cognito_sub, email, name, is_online, last_active)
           VALUES ($1, $2, $3, true, NOW())
           ON CONFLICT (cognito_sub)
           DO UPDATE SET is_online = true, last_active = NOW()
-        `, [sub, email, name]);
-
-        console.log(`${sub} connected and marked online`);
+          RETURNING *
+        `;
+        
+        const result = await db.query(query, [sub, email, name]);
+        console.log('Database update result:', result.rows[0]);
         
         // Broadcast updated count after user connects
         await broadcastOnlineCount();
       } catch (dbError) {
         console.error('Database error:', dbError);
+        console.error('Error details:', {
+          message: dbError.message,
+          code: dbError.code,
+          detail: dbError.detail,
+          hint: dbError.hint,
+          position: dbError.position,
+          where: dbError.where
+        });
       }
 
       ws.on('close', async () => {
         connections.delete(sub);
         try {
-          await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
-          console.log(`${sub} disconnected and marked offline`);
+          console.log('User disconnecting, updating database:', sub);
+          const result = await db.query(
+            `UPDATE users SET is_online = false WHERE cognito_sub = $1 RETURNING *`,
+            [sub]
+          );
+          console.log('Disconnect update result:', result.rows[0]);
           
           // Broadcast updated count after user disconnects
           await broadcastOnlineCount();
         } catch (dbError) {
           console.error('Database error on disconnect:', dbError);
+          console.error('Error details:', {
+            message: dbError.message,
+            code: dbError.code,
+            detail: dbError.detail
+          });
         }
       });
     });
@@ -142,8 +173,13 @@ app.get('/', (req, res) => {
 
 // === REST ROUTE to get online count ===
 app.get('/online-count', async (req, res) => {
-  const result = await db.query(`SELECT COUNT(*) FROM users WHERE is_online = true`);
-  res.send({ onlineUsers: parseInt(result.rows[0].count) });
+  try {
+    const result = await db.query(`SELECT COUNT(*) FROM users WHERE is_online = true`);
+    res.send({ onlineUsers: parseInt(result.rows[0].count) });
+  } catch (error) {
+    console.error('Error getting online count:', error);
+    res.status(500).send({ error: 'Failed to get online count' });
+  }
 });
 
 // Start the server
