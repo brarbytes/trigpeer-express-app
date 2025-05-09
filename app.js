@@ -20,16 +20,42 @@ const db = new Pool({
   database: 'database-trigpeer',
   password: 'Gbrar18129!',
   port: 5432,
-});
-
-// Test database connection
-db.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Database connection error:', err);
-  } else {
-    console.log('Database connected successfully');
+  connectionTimeoutMillis: 5000, // 5 seconds
+  idleTimeoutMillis: 30000, // 30 seconds
+  max: 20, // maximum number of clients in the pool
+  ssl: {
+    rejectUnauthorized: false // Required for AWS RDS
   }
 });
+
+// Add better error handling for database connection
+db.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
+
+// Test database connection with retry
+async function testDatabaseConnection(retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const result = await db.query('SELECT NOW()');
+      console.log('Database connected successfully');
+      return true;
+    } catch (err) {
+      console.error(`Database connection attempt ${i + 1} failed:`, err);
+      if (i === retries - 1) {
+        console.error('All database connection attempts failed');
+        return false;
+      }
+      // Wait for 2 seconds before retrying
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  return false;
+}
+
+// Call the test function
+testDatabaseConnection();
 
 // === EXPRESS SERVER ===
 const app = express();
@@ -105,8 +131,15 @@ wss.on('connection', async function connection(ws, req) {
         return;
       }
 
-      console.log('Token verified successfully. User data:', decoded);
-      const { sub, email, name } = decoded;
+      console.log('Token verified successfully. Full decoded token:', decoded);
+      
+      // Extract user data with fallbacks
+      const sub = decoded.sub;
+      const email = decoded.email || decoded['cognito:username'] || 'unknown@email.com';
+      const name = decoded.name || decoded['cognito:username'] || 'Unknown User';
+      
+      console.log('Extracted user data:', { sub, email, name });
+      
       connections.set(sub, ws);
 
       // Mark user online in DB
@@ -117,7 +150,11 @@ wss.on('connection', async function connection(ws, req) {
           INSERT INTO users (cognito_sub, email, name, is_online, last_active)
           VALUES ($1, $2, $3, true, NOW())
           ON CONFLICT (cognito_sub)
-          DO UPDATE SET is_online = true, last_active = NOW()
+          DO UPDATE SET 
+            is_online = true, 
+            last_active = NOW(),
+            email = COALESCE($2, users.email),
+            name = COALESCE($3, users.name)
           RETURNING *
         `;
         
