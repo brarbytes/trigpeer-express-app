@@ -126,6 +126,34 @@ async function broadcastOnlineCount() {
 wss.on('connection', async function connection(ws, req) {
   console.log('New WebSocket connection attempt from:', req.socket.remoteAddress);
   
+  // Store the sub outside the try block so it's accessible in the close handler
+  let userSub = null;
+  
+  // Set up close handler immediately
+  ws.on('close', async () => {
+    if (userSub) {
+      connections.delete(userSub);
+      try {
+        console.log('User disconnecting, updating database:', userSub);
+        const result = await db.query(
+          `UPDATE users SET is_online = false WHERE cognito_sub = $1 RETURNING *`,
+          [userSub]
+        );
+        console.log('Disconnect update result:', result.rows[0]);
+        
+        // Broadcast updated count after user disconnects
+        await broadcastOnlineCount();
+      } catch (dbError) {
+        console.error('Database error on disconnect:', dbError);
+        console.error('Error details:', {
+          message: dbError.message,
+          code: dbError.code,
+          detail: dbError.detail
+        });
+      }
+    }
+  });
+  
   try {
     // Parse URL to get token
     const url = new URL(req.url, `ws://${req.headers.host}`);
@@ -149,6 +177,7 @@ wss.on('connection', async function connection(ws, req) {
       
       // Extract user data with fallbacks
       const sub = decoded.sub;
+      userSub = sub; // Store the sub for the close handler
       const email = decoded.email || decoded['cognito:username'] || 'unknown@email.com';
       const name = decoded.name || decoded['cognito:username'] || 'Unknown User';
       
@@ -188,28 +217,6 @@ wss.on('connection', async function connection(ws, req) {
           where: dbError.where
         });
       }
-
-      ws.on('close', async () => {
-        connections.delete(sub);
-        try {
-          console.log('User disconnecting, updating database:', sub);
-          const result = await db.query(
-            `UPDATE users SET is_online = false WHERE cognito_sub = $1 RETURNING *`,
-            [sub]
-          );
-          console.log('Disconnect update result:', result.rows[0]);
-          
-          // Broadcast updated count after user disconnects
-          await broadcastOnlineCount();
-        } catch (dbError) {
-          console.error('Database error on disconnect:', dbError);
-          console.error('Error details:', {
-            message: dbError.message,
-            code: dbError.code,
-            detail: dbError.detail
-          });
-        }
-      });
     });
   } catch (error) {
     console.error('Connection error:', error);
@@ -238,3 +245,25 @@ server.listen(PORT, HOST, () => {
   console.log(`Server listening on http://${HOST}:${PORT}`);
   console.log(`WebSocket server running on ws://${HOST}:${PORT}/ws`);
 });
+
+// Add this after your WebSocket server setup
+// Periodic cleanup of stale connections
+setInterval(async () => {
+  try {
+    // Update any users who haven't been active in the last 5 minutes
+    const result = await db.query(`
+      UPDATE users 
+      SET is_online = false 
+      WHERE is_online = true 
+      AND last_active < NOW() - INTERVAL '5 minutes'
+      RETURNING *
+    `);
+    
+    if (result.rows.length > 0) {
+      console.log('Cleaned up stale connections:', result.rows.length);
+      await broadcastOnlineCount();
+    }
+  } catch (error) {
+    console.error('Error cleaning up stale connections:', error);
+  }
+}, 60000); // Run every minute
