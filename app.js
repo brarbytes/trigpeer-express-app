@@ -113,7 +113,7 @@ async function broadcastOnlineCount() {
     });
 
     wss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === 1) { // 1 is OPEN state
         client.send(message);
       }
     });
