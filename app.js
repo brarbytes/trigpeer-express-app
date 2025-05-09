@@ -20,12 +20,14 @@ const db = new Pool({
   database: 'database-trigpeer',
   password: 'Gbrar18129!',
   port: 5432,
-  connectionTimeoutMillis: 5000, // 5 seconds
+  connectionTimeoutMillis: 10000, // 10 seconds
   idleTimeoutMillis: 30000, // 30 seconds
   max: 20, // maximum number of clients in the pool
   ssl: {
     rejectUnauthorized: false // Required for AWS RDS
-  }
+  },
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000
 });
 
 // Add better error handling for database connection
@@ -34,15 +36,24 @@ db.on('error', (err) => {
   process.exit(-1);
 });
 
-// Test database connection with retry
+// Test database connection with retry and more detailed error logging
 async function testDatabaseConnection(retries = 5) {
   for (let i = 0; i < retries; i++) {
     try {
+      console.log(`Attempting database connection ${i + 1}/${retries}...`);
       const result = await db.query('SELECT NOW()');
       console.log('Database connected successfully');
       return true;
     } catch (err) {
       console.error(`Database connection attempt ${i + 1} failed:`, err);
+      console.error('Connection details:', {
+        host: db.options.host,
+        port: db.options.port,
+        database: db.options.database,
+        user: db.options.user,
+        ssl: db.options.ssl ? 'enabled' : 'disabled'
+      });
+      
       if (i === retries - 1) {
         console.error('All database connection attempts failed');
         return false;
