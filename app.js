@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const jwksClient = require('jwks-rsa');
 const { Pool } = require('pg');
 const http = require('http');
+const cors = require('cors');
 
 // === CONFIG ===
 const REGION = 'us-east-2';
@@ -96,6 +97,19 @@ wss.on('connection', async function connection(ws, req) {
           console.error('Database error on disconnect:', dbError);
         }
       });
+
+      ws.onerror = (error) => {
+        console.error('WebSocket Error:', error);
+        console.log('WebSocket Details:', {
+          state: ws.readyState,
+          url: ws.url,
+          protocol: ws.protocol,
+          extensions: ws.extensions
+        });
+        
+        // Add this to see the full error object
+        console.log('Full error object:', JSON.stringify(error, null, 2));
+      };
     });
   } catch (error) {
     console.error('Connection error:', error);
@@ -113,6 +127,9 @@ app.get('/online-count', async (req, res) => {
   const result = await db.query(`SELECT COUNT(*) FROM users WHERE is_online = true`);
   res.send({ onlineUsers: parseInt(result.rows[0].count) });
 });
+
+// Add this after your Express app initialization
+app.use(cors());
 
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
