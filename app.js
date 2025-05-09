@@ -20,14 +20,17 @@ const db = new Pool({
   database: 'database-trigpeer',
   password: 'Gbrar18129!',
   port: 5432,
-  connectionTimeoutMillis: 10000, // 10 seconds
-  idleTimeoutMillis: 30000, // 30 seconds
-  max: 20, // maximum number of clients in the pool
+  connectionTimeoutMillis: 30000, // Increased to 30 seconds
+  idleTimeoutMillis: 60000, // Increased to 60 seconds
+  max: 20,
   ssl: {
-    rejectUnauthorized: false // Required for AWS RDS
+    rejectUnauthorized: false
   },
   keepAlive: true,
-  keepAliveInitialDelayMillis: 10000
+  keepAliveInitialDelayMillis: 10000,
+  application_name: 'trigpeer-express-app',
+  statement_timeout: 30000, // 30 seconds
+  query_timeout: 30000 // 30 seconds
 });
 
 // Add better error handling for database connection
