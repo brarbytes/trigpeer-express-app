@@ -11,6 +11,7 @@ const cors = require('cors');
 const REGION = 'us-east-2';
 const USER_POOL_ID = 'us-east-2_WSq529He2';
 const PORT = 3000;
+const HOST = '0.0.0.0';
 
 // === DB SETUP ===
 const db = new Pool({
@@ -24,6 +25,9 @@ const db = new Pool({
 // === EXPRESS SERVER ===
 const app = express();
 const server = http.createServer(app);
+
+// Add CORS middleware BEFORE any routes or WebSocket setup
+app.use(cors());
 
 // === JWKS CLIENT FOR COGNITO JWT ===
 const client = jwksClient({
@@ -40,18 +44,39 @@ function getKey(header, callback) {
 // === WebSocket Setup ===
 const wss = new WebSocketServer({ 
   server,
-  path: '/ws'
+  path: '/ws',
+  // Add these options for debugging
+  clientTracking: true,
+  perMessageDeflate: false,
+  // Add these options to handle errors better
+  handleProtocols: (protocols, req) => {
+    console.log('Protocols requested:', protocols);
+    return protocols[0];
+  }
+});
+
+// Add error handling for the WebSocket server
+wss.on('error', (error) => {
+  console.error('WebSocket server error:', error);
+});
+
+// Add listening event handler
+wss.on('listening', () => {
+  console.log('WebSocket server is listening on port', PORT);
 });
 
 const connections = new Map(); // Map of sub -> ws
 
 // === On WebSocket Connect ===
 wss.on('connection', async function connection(ws, req) {
-  console.log('New WebSocket connection attempt');
+  console.log('New WebSocket connection attempt from:', req.socket.remoteAddress);
+  console.log('Request URL:', req.url);
+  console.log('Request headers:', req.headers);
   
   try {
     // Parse URL to get token
-    const url = new URL(req.url, 'ws://localhost');
+    const url = new URL(req.url, `ws://${req.headers.host}`);
+    console.log('Parsed URL:', url.toString());
     const token = url.searchParams.get('token');
     
     console.log('Token received:', token ? 'Yes' : 'No');
@@ -106,9 +131,6 @@ wss.on('connection', async function connection(ws, req) {
           protocol: ws.protocol,
           extensions: ws.extensions
         });
-        
-        // Add this to see the full error object
-        console.log('Full error object:', JSON.stringify(error, null, 2));
       };
     });
   } catch (error) {
@@ -128,10 +150,8 @@ app.get('/online-count', async (req, res) => {
   res.send({ onlineUsers: parseInt(result.rows[0].count) });
 });
 
-// Add this after your Express app initialization
-app.use(cors());
-
-server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-  console.log(`WebSocket server running on ws://localhost:${PORT}/ws`);
+// Start the server
+server.listen(PORT, HOST, () => {
+  console.log(`Server listening on http://${HOST}:${PORT}`);
+  console.log(`WebSocket server running on ws://${HOST}:${PORT}/ws`);
 });
