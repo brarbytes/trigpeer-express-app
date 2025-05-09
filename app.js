@@ -45,42 +45,42 @@ function getKey(header, callback) {
 const wss = new WebSocketServer({ 
   server,
   path: '/ws',
-  // Add these options for debugging
   clientTracking: true,
-  perMessageDeflate: false,
-  // Add these options to handle errors better
-  handleProtocols: (protocols, req) => {
-    console.log('Protocols requested:', protocols);
-    return protocols[0];
-  }
-});
-
-// Add error handling for the WebSocket server
-wss.on('error', (error) => {
-  console.error('WebSocket server error:', error);
-});
-
-// Add listening event handler
-wss.on('listening', () => {
-  console.log('WebSocket server is listening on port', PORT);
+  perMessageDeflate: false
 });
 
 const connections = new Map(); // Map of sub -> ws
 
+// Function to broadcast online count to all clients
+async function broadcastOnlineCount() {
+  try {
+    const result = await db.query(`SELECT COUNT(*) FROM users WHERE is_online = true`);
+    const count = parseInt(result.rows[0].count);
+    
+    const message = JSON.stringify({
+      type: 'onlineCount',
+      count: count
+    });
+
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  } catch (error) {
+    console.error('Error broadcasting online count:', error);
+  }
+}
+
 // === On WebSocket Connect ===
 wss.on('connection', async function connection(ws, req) {
   console.log('New WebSocket connection attempt from:', req.socket.remoteAddress);
-  console.log('Request URL:', req.url);
-  console.log('Request headers:', req.headers);
   
   try {
     // Parse URL to get token
     const url = new URL(req.url, `ws://${req.headers.host}`);
-    console.log('Parsed URL:', url.toString());
     const token = url.searchParams.get('token');
     
-    console.log('Token received:', token ? 'Yes' : 'No');
-
     if (!token) {
       console.log('No token provided');
       ws.close(1008, 'Token required');
@@ -91,17 +91,11 @@ wss.on('connection', async function connection(ws, req) {
     jwt.verify(token, getKey, {}, async (err, decoded) => {
       if (err) {
         console.error('Token verification failed:', err);
-        console.error('Token verification error details:', {
-          name: err.name,
-          message: err.message,
-          stack: err.stack
-        });
         ws.close(1008, 'Invalid token');
         return;
       }
 
       console.log('Token verified successfully');
-      console.log('Decoded token:', decoded);
       const { sub, email, name } = decoded;
       connections.set(sub, ws);
 
@@ -115,6 +109,9 @@ wss.on('connection', async function connection(ws, req) {
         `, [sub, email, name]);
 
         console.log(`${sub} connected and marked online`);
+        
+        // Broadcast updated count after user connects
+        await broadcastOnlineCount();
       } catch (dbError) {
         console.error('Database error:', dbError);
       }
@@ -124,20 +121,13 @@ wss.on('connection', async function connection(ws, req) {
         try {
           await db.query(`UPDATE users SET is_online = false WHERE cognito_sub = $1`, [sub]);
           console.log(`${sub} disconnected and marked offline`);
+          
+          // Broadcast updated count after user disconnects
+          await broadcastOnlineCount();
         } catch (dbError) {
           console.error('Database error on disconnect:', dbError);
         }
       });
-
-      ws.onerror = (error) => {
-        console.error('WebSocket Error:', error);
-        console.log('WebSocket Details:', {
-          state: ws.readyState,
-          url: ws.url,
-          protocol: ws.protocol,
-          extensions: ws.extensions
-        });
-      };
     });
   } catch (error) {
     console.error('Connection error:', error);
