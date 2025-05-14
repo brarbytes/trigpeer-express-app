@@ -33,6 +33,26 @@ const db = new Pool({
   query_timeout: 30000 // 30 seconds
 });
 
+// Create questions table if it doesn't exist
+db.query(`
+  CREATE TABLE IF NOT EXISTS questions (
+    id SERIAL PRIMARY KEY,
+    user_sub TEXT NOT NULL,
+    question_text TEXT NOT NULL,
+    tags TEXT[] DEFAULT '{}',
+    emotions TEXT[] DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    answered_by TEXT,
+    answer_text TEXT,
+    answered_at TIMESTAMP WITH TIME ZONE,
+    status TEXT DEFAULT 'pending',
+    FOREIGN KEY (user_sub) REFERENCES users(cognito_sub),
+    FOREIGN KEY (answered_by) REFERENCES users(cognito_sub)
+  );
+`).catch(err => {
+  console.error('Error creating questions table:', err);
+});
+
 // Add better error handling for database connection
 db.on('error', (err) => {
   console.error('Unexpected error on idle client', err);
@@ -243,7 +263,7 @@ app.get('/online-count', async (req, res) => {
 // === Question Endpoints ===
 app.post('/questions', async (req, res) => {
   try {
-    const { question_text } = req.body;
+    const { question_text, tags, emotions } = req.body;
     const token = req.headers.authorization?.split(' ')[1];
     
     if (!token) {
@@ -258,12 +278,12 @@ app.post('/questions', async (req, res) => {
 
       const userSub = decoded.sub;
       
-      // Insert question
+      // Insert question with tags and emotions
       const result = await db.query(
-        `INSERT INTO questions (user_sub, question_text)
-         VALUES ($1, $2)
+        `INSERT INTO questions (user_sub, question_text, tags, emotions)
+         VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [userSub, question_text]
+        [userSub, question_text, tags || [], emotions || []]
       );
 
       // Broadcast new question to all connected clients
