@@ -240,6 +240,137 @@ app.get('/online-count', async (req, res) => {
   }
 });
 
+// === Question Endpoints ===
+app.post('/questions', async (req, res) => {
+  try {
+    const { question_text } = req.body;
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    // Verify token and get user info
+    jwt.verify(token, getKey, {}, async (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      const userSub = decoded.sub;
+      
+      // Insert question
+      const result = await db.query(
+        `INSERT INTO questions (user_sub, question_text)
+         VALUES ($1, $2)
+         RETURNING *`,
+        [userSub, question_text]
+      );
+
+      // Broadcast new question to all connected clients
+      const question = result.rows[0];
+      const message = JSON.stringify({
+        type: 'newQuestion',
+        question: {
+          ...question,
+          user: {
+            name: decoded.name || decoded['cognito:username'],
+            email: decoded.email
+          }
+        }
+      });
+
+      wss.clients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(message);
+        }
+      });
+
+      res.json(result.rows[0]);
+    });
+  } catch (error) {
+    console.error('Error submitting question:', error);
+    res.status(500).json({ error: 'Failed to submit question' });
+  }
+});
+
+app.get('/questions', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT q.*, u.name as user_name, u.email as user_email,
+             a.name as answerer_name
+      FROM questions q
+      LEFT JOIN users u ON q.user_sub = u.cognito_sub
+      LEFT JOIN users a ON q.answered_by = a.cognito_sub
+      ORDER BY q.created_at DESC
+      LIMIT 50
+    `);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching questions:', error);
+    res.status(500).json({ error: 'Failed to fetch questions' });
+  }
+});
+
+app.post('/questions/:id/answer', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { answer_text } = req.body;
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    jwt.verify(token, getKey, {}, async (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      const answererSub = decoded.sub;
+      
+      const result = await db.query(
+        `UPDATE questions 
+         SET answered_by = $1, 
+             answer_text = $2, 
+             answered_at = CURRENT_TIMESTAMP,
+             status = 'answered'
+         WHERE id = $3
+         RETURNING *`,
+        [answererSub, answer_text, id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Question not found' });
+      }
+
+      // Broadcast answer to all connected clients
+      const question = result.rows[0];
+      const message = JSON.stringify({
+        type: 'questionAnswered',
+        question: {
+          ...question,
+          answerer: {
+            name: decoded.name || decoded['cognito:username'],
+            email: decoded.email
+          }
+        }
+      });
+
+      wss.clients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(message);
+        }
+      });
+
+      res.json(result.rows[0]);
+    });
+  } catch (error) {
+    console.error('Error submitting answer:', error);
+    res.status(500).json({ error: 'Failed to submit answer' });
+  }
+});
+
 // Start the server
 server.listen(PORT, HOST, () => {
   console.log(`Server listening on http://${HOST}:${PORT}`);
